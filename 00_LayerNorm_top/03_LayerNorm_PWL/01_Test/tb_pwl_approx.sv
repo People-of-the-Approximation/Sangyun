@@ -1,10 +1,7 @@
 `timescale 1ns / 1ps
 
 module tb_pwl_approx;
-
-    // =================================================================
     // 1. Signal Declaration
-    // =================================================================
     reg         i_clk;
     reg         i_en;
     reg         i_rst;
@@ -18,9 +15,7 @@ module tb_pwl_approx;
     real        real_input;
     real        real_output;
 
-    // =================================================================
     // 2. DUT Instantiation
-    // =================================================================
     pwl_approx dut (
         .i_clk      (i_clk),
         .i_en       (i_en),
@@ -31,9 +26,7 @@ module tb_pwl_approx;
         .o_result   (o_result)
     );
 
-    // =================================================================
     // 3. Clock Generation (100MHz)
-    // =================================================================
     initial begin
         i_clk = 0;
         forever #5 i_clk = ~i_clk;
@@ -43,9 +36,7 @@ module tb_pwl_approx;
     always @(*) real_input  = i_variance / 2048.0;
     always @(*) real_output = o_result / 2048.0;
 
-    // =================================================================
-    // 4. Test Stimulus (Main Sequence)
-    // =================================================================
+    // 4. Test Stimulus
     integer k;
 
     initial begin
