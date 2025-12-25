@@ -1,3 +1,14 @@
+// summary
+// using ip catalog add & mult
+// add (3 latency) : A 32bit, B 17bit, O 33bit, clk, CE
+// mult(5 latency) : A 32bit, B 18bit, O 40ibt, clk, CE
+// input 16bit * 64
+// output var : 32bit, mean : 16bit
+// total latency : 11 (each reg : 1 * 3EA / add : 3 / mult : 5)
+
+// Variance Latency: Mult(5) + Tree(6) + Sub(3) = 14
+// using IP 
+
 module pair_var (
     input  wire          i_clk,
     input  wire          i_en,
