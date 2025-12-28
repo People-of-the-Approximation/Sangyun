@@ -111,6 +111,24 @@ module ln_bert_top_module (
     // 6. Stage 4: Normalize (Old Stage 3)
     // =============================================================
     // Stage 3 완료 시 레지스터 캡처 (Timing Buffer)
+    reg [3:0] r_gamma_addr_delay [0:7]; // Depth = 7
+    integer d;
+
+    always @(posedge i_clk) begin
+        if (i_en) begin
+            // 1. 현재 cycle_cnt를 파이프라인 입구에 넣음
+            r_gamma_addr_delay[0] <= cycle_cnt;
+
+            // 2. 한 칸씩 옆으로 전달 (Shift)
+            for (d=0; d<7; d=d+1) begin
+                r_gamma_addr_delay[d+1] <= r_gamma_addr_delay[d];
+            end
+        end
+    end
+
+    // 7클럭 지연된 주소 (이걸 ROM 읽을 때 사용!)
+    wire [3:0] w_delayed_cycle_cnt = r_gamma_addr_delay[7];
+    
     reg signed [31:0] s4_mean_reg;
     reg signed [16:0] s4_inv_sqrt_reg;
     reg [1:0]         s4_active_bank;
@@ -133,7 +151,7 @@ module ln_bert_top_module (
         .i_addr(s4_in_tag),
         .i_mean(s4_mean_reg), .i_inv_sqrt(s4_inv_sqrt_reg),
         .i_raw_data_flat(input_bram[s4_active_bank][cycle_cnt]),
-        .i_gamma_flat(rom_gamma_flat[cycle_cnt]), .i_beta_flat(rom_beta_flat[cycle_cnt]),
+        .i_gamma_flat(rom_gamma_flat[w_delayed_cycle_cnt]), .i_beta_flat(rom_beta_flat[w_delayed_cycle_cnt]),
         .o_res_data_flat(s4_res_data), .o_res_valid(s4_res_valid), .o_res_addr(s4_out_tag)
     );
 
