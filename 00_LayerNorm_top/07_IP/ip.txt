@@ -1,0 +1,9 @@
+mult_sum_const      : 31 12 / 5
+mult_sq_sum_const   : 51 12 / 5
+mult_mean_sq        : 32 32 / 5
+mult_gen_pwl        : 24 17 / 5
+mult_sum_const      : 31 12 / 5
+mult_norm_ip        : 17 17 / 5
+mult_affine_ip      : 24 16 / 5
+
+c_addsub_pwl        : 32 18 33 add / 3
