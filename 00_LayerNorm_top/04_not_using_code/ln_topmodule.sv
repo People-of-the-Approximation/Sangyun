@@ -1,5 +1,3 @@
-`timescale 1ns / 1ps
-
 module ln_topmodule (
     input  wire          i_clk,
     input  wire          i_en,
