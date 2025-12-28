@@ -119,18 +119,22 @@ module ln_stage4_normalize (
             end
 
             // -----------------------------------------------------
-            // [Step C] Shift & Mult 2: (res >> 10) * gamma (Latency = 5)
+            // [Step C] Mult 2: (Mult1_Res * Gamma) (Latency = 5)
             // -----------------------------------------------------
-            wire signed [23:0] w_shifted; 
-            assign w_shifted = w_mult1_out >>> 10; 
+            
+            // [수정] Step C에서 Shift(>>> 10)를 제거하고 Q10 포맷을 유지합니다.
+            // w_mult1_out은 34비트지만 Q20 (10+10) 포맷입니다. 
+            // 정밀도 유지를 위해 필요한 부분(하위 24비트)만 잘라서 입력합니다.
+            wire signed [23:0] w_mult1_truncated;
+            assign w_mult1_truncated = w_mult1_out[23:0]; // Q10
 
-            wire signed [39:0] w_mult2_out; 
+            wire signed [39:0] w_mult2_out; // 결과는 Q20 (Q10 * Q10)
 
             mult_affine_ip u_mult_affine (
                 .CLK(i_clk), .CE(i_en),
-                .A(w_shifted), 
-                .B(r_gamma_delay1[LAT_MULT1-1]), 
-                .P(w_mult2_out)
+                .A(w_mult1_truncated),      // Q10
+                .B(r_gamma_delay1[LAT_MULT1-1]), // Q10 Gamma
+                .P(w_mult2_out)             // Q20
             );
 
             // Beta Delay Line (Mult2 Latency=5 만큼 지연)
@@ -147,31 +151,30 @@ module ln_stage4_normalize (
             end
 
             // -----------------------------------------------------
-            // [Step D] Add Beta (Combinational -> Output Reg)
+            // [Step D] Shift -> Add Beta -> Saturate (최종 수정)
             // -----------------------------------------------------
             reg signed [15:0] r_final_saturated;
             
-            // 1. Shift: Q20 -> Q10으로 변환 (Gamma 곱셈 결과 스케일링)
-            // w_mult2_out은 40비트(Q20)이므로 10비트 내려야 Beta(Q10)와 맞음
+            // 1. Shift (40비트 유지)
             wire signed [39:0] w_mult2_shifted;
-            assign w_mult2_shifted = w_mult2_out >>> 10;
+            assign w_mult2_shifted = w_mult2_out >>> 10; // 원래대로 10 유지
 
-            // 2. Add: (Scaled Mult Result) + Beta
-            // 더하다가 넘칠 수 있으므로 여유 비트(17bit) 사용
-            wire signed [16:0] w_add_beta;
-            assign w_add_beta = w_mult2_shifted[16:0] + r_beta_delay2[LAT_MULT2-1];
+            // 2. Add Beta (넓은 그릇에서 계산!)
+            // [수정] 17비트로 자르지 않고, 40비트 전체를 사용하여 더합니다.
+            wire signed [39:0] w_add_beta_large;
+            assign w_add_beta_large = w_mult2_shifted + r_beta_delay2[LAT_MULT2-1];
 
-            // 3. Saturate: 16비트 범위(-32768 ~ 32767)로 자르기
+            // 3. Saturate (넓은 그릇을 보고 판단)
             always @(*) begin
-                // 양수 오버플로우 (01... -> 최대값)
-                if (w_add_beta > 17'sd32767) 
+                // 16비트 최대값(32767)보다 크면 고정
+                if (w_add_beta_large > 32767) 
                     r_final_saturated = 16'sd32767;
-                // 음수 오버플로우 (10... -> 최소값)
-                else if (w_add_beta < -17'sd32768) 
+                // 16비트 최소값(-32768)보다 작으면 고정
+                else if (w_add_beta_large < -32768) 
                     r_final_saturated = -16'sd32768;
-                // 정상 범위
+                // 범위 안이면 하위 16비트만 통과
                 else 
-                    r_final_saturated = w_add_beta[15:0];
+                    r_final_saturated = w_add_beta_large[15:0];
             end
             
             assign w_final[g] = r_final_saturated;

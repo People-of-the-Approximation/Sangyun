@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module ln_bert_top_module (
     input  wire          i_clk, i_rst, i_en,
     input  wire          i_valid,

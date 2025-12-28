@@ -35,7 +35,7 @@ module ln_stage3_calc_pwl (
     // [수정 핵심] 11클럭 + 1클럭(Reg) = 12클럭 완성
     always @(posedge i_clk) begin
         if (i_en) begin
-            o_inv_sqrt <= w_inv_sqrt_raw;
+            o_inv_sqrt <= w_inv_sqrt_raw >>> 6 ;
             o_valid    <= w_valid_raw;
         end
     end
