@@ -17,7 +17,9 @@ module ln_stage1_accumulate (
     output wire signed [37:0] o_part_sq_sum
 );
 
-    // partial_sum의 7클럭 지연
+    // =============================================================
+    // [Latency 보상] partial_sum의 7클럭 지연 대응
+    // =============================================================
     localparam LATENCY = 7; 
 
     reg [LATENCY-1:0] r_valid_delay;        
@@ -40,10 +42,14 @@ module ln_stage1_accumulate (
         end
     end
 
+    // 출력 할당
     assign o_acc_valid = r_valid_delay[LATENCY-1];
     assign o_acc_ptr   = r_ptr_delay[LATENCY-1];
     assign o_acc_cnt   = r_cnt_delay[LATENCY-1];
 
+    // =============================================================
+    // Adder IP 인스턴스
+    // =============================================================
     partial_sum_64 u_adder (
         .i_clk(i_clk), 
         .i_rst(i_rst), 

@@ -1,55 +1,63 @@
 `timescale 1ns / 1ps
 
-module ln_stage3_normalize (
-    // 순수 Combinational Logic + 1 Clock Register 형태가 일반적이지만
-    // 원본 구조 유지를 위해 Clocked Logic으로 구현
+module ln_stage3_calc_pwl (
+    input  wire          i_clk,
+    input  wire          i_rst,
+    input  wire          i_en,
+    input  wire          i_valid,
+    input  wire [1:0]    i_bank_id,
     
-    input  wire i_clk,
-    input  wire i_en,
-    input  wire i_valid_trigger, // 정규화 수행 신호
-    
-    // 파라미터 및 통계치
     input  wire signed [31:0] i_mean,
-    input  wire signed [16:0] i_inv_sqrt, // 부호비트 포함 확장됨
-    
-    // 벡터 데이터 (입력)
-    input  wire [1023:0] i_raw_data_flat,
-    input  wire [1023:0] i_gamma_flat, // Flattened Gamma (64x16)
-    input  wire [1023:0] i_beta_flat,  // Flattened Beta (64x16)
+    input  wire [15:0]        i_variance,
 
-    // 벡터 데이터 (출력)
-    output reg  [1023:0] o_res_data_flat,
-    output reg           o_res_valid
+    output wire signed [31:0] o_mean,
+    
+    // [수정] 바로 내보내지 않고 reg로 잡아서 1클럭 지연
+    output reg  [15:0]        o_inv_sqrt, 
+    output reg                o_valid,    
+    output wire [1:0]         o_bank_id
 );
 
-    integer k;
-    reg signed [15:0] r_raw_val;
-    reg signed [31:0] r_norm_temp;  
-    reg signed [31:0] r_final_val;  
-    reg signed [15:0] w_gamma;
-    reg signed [15:0] w_beta;
+    localparam PWL_LATENCY = 12;
 
+    // 1. PWL (Inverse Sqrt) - Raw Output (11클럭 만에 나옴)
+    wire [15:0] w_inv_sqrt_raw;
+    wire        w_valid_raw;
+
+    pwl_approx u_pwl (
+        .i_clk(i_clk), .i_rst(i_rst), .i_en(i_en),
+        .i_valid(i_valid),
+        .i_variance(i_variance),
+        .o_result(w_inv_sqrt_raw),
+        .o_valid(w_valid_raw)
+    );
+
+    // [수정 핵심] 11클럭 + 1클럭(Reg) = 12클럭 완성
     always @(posedge i_clk) begin
-        if (i_en && i_valid_trigger) begin
-            for (k=0; k<64; k=k+1) begin
-                // 1. Slicing
-                r_raw_val = i_raw_data_flat[16*k +: 16];
-                w_gamma   = i_gamma_flat[16*k +: 16];
-                w_beta    = i_beta_flat[16*k +: 16];
-
-                // 2. Normalization: (x - u) * inv_sqrt
-                r_norm_temp = (r_raw_val - i_mean[15:0]) * i_inv_sqrt;
-                
-                // 3. Affine: * gamma + beta
-                r_final_val = ((r_norm_temp >>> 10) * w_gamma) + w_beta; 
-
-                // 4. Output Packing
-                o_res_data_flat[16*k +: 16] <= r_final_val[15:0]; 
-            end
-            o_res_valid <= 1'b1;
-        end else begin
-            o_res_valid <= 1'b0;
+        if (i_en) begin
+            o_inv_sqrt <= w_inv_sqrt_raw;
+            o_valid    <= w_valid_raw;
         end
     end
+
+    // 2. Mean & Bank ID Sync (PWL Latency 12만큼 지연)
+    // 이쪽은 Shift Register가 12칸이라 이미 12클럭임. 그대로 둠.
+    reg signed [31:0] r_mean_sync [0:PWL_LATENCY-1];
+    reg [1:0]         r_bank_sync [0:PWL_LATENCY-1];
+    integer i;
+
+    always @(posedge i_clk) begin
+        if (i_en) begin
+            r_mean_sync[0] <= i_mean;
+            r_bank_sync[0] <= i_bank_id;
+            for (i=1; i<PWL_LATENCY; i=i+1) begin
+                r_mean_sync[i] <= r_mean_sync[i-1];
+                r_bank_sync[i] <= r_bank_sync[i-1];
+            end
+        end
+    end
+
+    assign o_mean    = r_mean_sync[PWL_LATENCY-1];
+    assign o_bank_id = r_bank_sync[PWL_LATENCY-1];
 
 endmodule
