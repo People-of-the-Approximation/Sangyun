@@ -17,8 +17,8 @@ import verify
 # =========================
 # Settings
 # =========================
-DEFAULT_PORT = "COM6"
-DEFAULT_BAUD = 256000
+DEFAULT_PORT = "COM3"
+DEFAULT_BAUD = 115200
 
 # id -> {"tokens": [...], "attn": np.ndarray(T,T), "meta": {...}}
 ATTN_STORE = {}

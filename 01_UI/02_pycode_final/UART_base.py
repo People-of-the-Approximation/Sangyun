@@ -1,3 +1,4 @@
+# UART_base.py
 import serial
 import time
 import numpy as np
@@ -21,8 +22,7 @@ def open_serial(port: str, baud: int = 115200, timeout: float = 1.0) -> serial.S
         rtscts=False,
         dsrdtr=False,
     )
-
-    # ESP32/FTDI/Arduino 계열은 포트 오픈 후 리셋/부트 딜레이가 필요할 때가 많음
+    # 포트 오픈 후 안정화 대기
     time.sleep(2.0)
     ser.reset_input_buffer()
     ser.reset_output_buffer()
@@ -30,7 +30,6 @@ def open_serial(port: str, baud: int = 115200, timeout: float = 1.0) -> serial.S
 
 
 def send_exact(ser: serial.Serial, frame: bytes):
-    # 기존 코드 스타일 유지: 전송 전 입력 버퍼 비움
     ser.reset_input_buffer()
     ser.write(frame)
     ser.flush()
@@ -53,18 +52,11 @@ def read_exact(ser: serial.Serial, N: int, deadline_s: float = 2.0) -> bytes:
     return bytes(buffer)
 
 
-def floats_to_q610_bytes(
-    x64, *, endian: str = "little", mode: str = "saturate"
-) -> bytes:
-    """
-    Convert float array to Q6.10 int16 bytes.
-    - 기존: 길이 64 고정
-    - 수정: 1D 임의 길이 허용(64, 128, 256 ... 또는 16/32 등도 가능)
-    """
-    x = np.asarray(x64, dtype=np.float64).reshape(-1)
-
-    if x.size < 1:
-        raise ValueError("Input must contain at least 1 element.")
+def floats_to_q610_bytes(x64, *, endian: str = "big", mode: str = "saturate") -> bytes:
+    # [수정] FPGA에 맞춰 Big Endian 기본값 설정
+    x = np.asarray(x64, dtype=np.float64)
+    if x.shape != (64,):
+        raise ValueError("Input must be a 1D array of length 64.")
 
     if mode == "strict":
         if np.any(x < Q610_MIN) or np.any(x > Q610_MAX):
@@ -74,65 +66,41 @@ def floats_to_q610_bytes(
             )
 
     scaled = np.rint(x * SCALE).astype(np.int32)
+    scaled = np.clip(scaled, I16_MIN, I16_MAX).astype(np.int16)
 
-    # saturate가 기본 동작
-    if mode in ("saturate", "strict"):
-        scaled = np.clip(scaled, I16_MIN, I16_MAX)
-
-    scaled = scaled.astype(np.int16)
-
-    dtype = "<i2" if endian == "little" else ">i2"
+    dtype = ">i2" if endian == "big" else "<i2"
     return scaled.astype(dtype, copy=False).tobytes()
 
 
-def q610_bytes_to_floats(b: bytes, *, endian: str = "little") -> np.ndarray:
-    """
-    Convert Q6.10 int16 bytes -> float array.
-    - 기존: 128B(=64개) 고정
-    - 수정: 바이트 길이 기반(2의 배수면 OK)
-    """
-    if len(b) % 2 != 0:
-        raise ValueError(f"Input byte length must be a multiple of 2 (len={len(b)})")
+def q610_bytes_to_floats(b: bytes, *, endian: str = "big") -> np.ndarray:
+    # [수정] 129바이트(헤더 1 + 데이터 128) 처리 로직 추가
+    if len(b) == 129:
+        actual_data = b[1:]  # 헤더/모드 바이트 제거
+    elif len(b) == 128:
+        actual_data = b
+    else:
+        # 데이터가 연속으로 들어올 때(Batch) 129의 배수가 아닐 수도 있으므로 체크
+        if len(b) % 129 == 0:
+            # 여기서는 단일 프레임 변환용이므로 일단 에러 처리하거나,
+            # 외부에서 잘라서 호출해야 함을 가정
+            pass
+        # 일반적인 128바이트 변환 시도
+        actual_data = b
 
-    dtype = "<i2" if endian == "little" else ">i2"
-    i16 = np.frombuffer(b, dtype=dtype)
+    # 128바이트여야 64개 float 변환 가능
+    if len(actual_data) != 128:
+        raise ValueError(
+            f"Invalid data length for float conversion: {len(actual_data)}"
+        )
+
+    dtype = ">i2" if endian == "big" else "<i2"
+    i16 = np.frombuffer(actual_data, dtype=dtype)
     return i16.astype(np.float64) / SCALE
 
 
-def build_softmax_frame_chunk64(
-    payload64: np.ndarray, tag: int, *, endian: str = "little"
-) -> bytes:
-    """
-    NEW PROTOCOL (TX):
-      129B = [tag 1B] + [payload 128B]  (payload = 64x int16(Q6.10))
-    """
-    x = np.asarray(payload64, dtype=np.float64).reshape(-1)
-    if x.size != 64:
-        raise ValueError(f"payload64 must have length 64 (got {x.size})")
-
-    payload_bytes = floats_to_q610_bytes(x, endian=endian)
-    return bytes([int(tag) & 0xFF]) + payload_bytes
-
-
-# ---- (optional) legacy helper kept for backward compatibility ----
 def build_softmax_frame(
-    payload64: np.ndarray, length: int, *, endian: str = "little"
+    payload64: np.ndarray, header_val: int, *, endian: str = "big"
 ) -> bytes:
-    """
-    LEGACY PROTOCOL (TX):
-      129B = [L 1B] + [payload 128B]
-    - 과거에는 L(1..64) 의미로 사용했음.
-    - 새 설계에서는 tag 방식(build_softmax_frame_chunk64)을 쓰는 것을 권장.
-    """
-    L = int(length)
-    if L < 1:
-        L = 1
-    if L > 64:
-        L = 64
-
-    x = np.asarray(payload64, dtype=np.float64).reshape(-1)
-    if x.size != 64:
-        raise ValueError(f"payload64 must have length 64 (got {x.size})")
-
-    payload_bytes = floats_to_q610_bytes(x, endian=endian)
-    return bytes([L]) + payload_bytes
+    # [수정] header_val을 첫 바이트로 붙여서 129바이트 프레임 생성
+    payload_bytes = floats_to_q610_bytes(payload64, endian=endian)
+    return bytes([header_val & 0xFF]) + payload_bytes
