@@ -11,29 +11,17 @@ import matplotlib.pyplot as plt
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-import torch
-
-from VerificationBERT import (
-    build_models_sst2,
-    compute_attention_sw,
-    compute_attention_hw,
-)
+import ui
+import verify
 
 # =========================
 # Settings
 # =========================
-DEVICE = "cpu"  # 필요하면 "cuda"로 변경
-
-# HW default UART
 DEFAULT_PORT = "COM6"
 DEFAULT_BAUD = 256000
 
-# Attention heatmap store
 # id -> {"tokens": [...], "attn": np.ndarray(T,T), "meta": {...}}
 ATTN_STORE = {}
-
-# Load models once
-tokenizer, baseline_model, approx_model = build_models_sst2(device=DEVICE)
 
 app = FastAPI()
 
@@ -43,162 +31,94 @@ app = FastAPI()
 # =========================
 @app.get("/", response_class=HTMLResponse)
 def root():
-    return HTMLResponse(
-        """
-    <html>
-      <head>
-        <title>Attention Heatmap (SST-2)</title>
-        <style>
-          body { font-family: Arial; margin: 24px; }
-          a { display:inline-block; margin-top:12px; }
-        </style>
-      </head>
-      <body>
-        <h2>Attention Heatmap UI (textattack/bert-base-uncased-SST-2)</h2>
-        <div>Go to: <a href="/attention_ui">/attention_ui</a></div>
-      </body>
-    </html>
-    """
-    )
+    return HTMLResponse(ui.render_root())
 
 
 @app.get("/attention_ui", response_class=HTMLResponse)
 def attention_ui():
-    return HTMLResponse(
-        f"""
-    <html>
-      <head>
-        <title>Attention Heatmap</title>
-        <style>
-          body {{ font-family: Arial; margin: 24px; }}
-          input[type=text] {{ width: 760px; padding: 8px; }}
-          button {{ padding: 8px 12px; }}
-          .row {{ margin-top: 12px; }}
-          .hint {{ color: #666; font-size: 13px; margin-top: 8px; }}
-          select {{ padding: 6px; }}
-        </style>
-      </head>
-      <body>
-        <h2>Attention Heatmap</h2>
-        <div class="hint">
-          mode:
-          <b>SW</b>=transformers attention,
-          <b>HW</b>=FPGA(UART) softmax attention,
-          <b>AUTO</b>=HW 시도 후 실패하면 SW로 fallback
-        </div>
-
-        <form method="post" action="/attention_generate">
-          <div class="row">
-            <input type="text" name="text" placeholder="영어 문장 입력 (SST-2 모델)" />
-            <button type="submit">Generate</button>
-          </div>
-
-          <div class="row">
-            <label>mode:</label>
-            <select name="mode">
-              <option value="auto" selected>AUTO</option>
-              <option value="sw">SW</option>
-              <option value="hw">HW</option>
-            </select>
-
-            <label style="margin-left:12px;">layer:</label>
-            <input type="text" name="layer" value="0" style="width:50px;" />
-
-            <label style="margin-left:12px;">head:</label>
-            <input type="text" name="head" value="0" style="width:50px;" />
-
-            <label style="margin-left:12px;">max_len:</label>
-            <input type="text" name="max_len" value="128" style="width:70px;" />
-          </div>
-
-          <div class="row">
-            <label>UART port:</label>
-            <input type="text" name="port" value="{DEFAULT_PORT}" style="width:90px;" />
-
-            <label style="margin-left:12px;">baud:</label>
-            <input type="text" name="baud" value="{DEFAULT_BAUD}" style="width:110px;" />
-          </div>
-        </form>
-      </body>
-    </html>
-    """
-    )
+    # 기본 mode를 HW로 설정
+    return HTMLResponse(ui.render_attention_ui(DEFAULT_PORT, DEFAULT_BAUD))
 
 
 @app.post("/attention_generate", response_class=HTMLResponse)
 def attention_generate(
     text: str = Form(...),
-    mode: str = Form("auto"),
+    mode: str = Form("hw"),
     layer: int = Form(0),
     head: int = Form(0),
     max_len: int = Form(128),
     port: str = Form(DEFAULT_PORT),
     baud: int = Form(DEFAULT_BAUD),
 ):
-    mode = (mode or "auto").lower().strip()
+    mode = (mode or "hw").lower().strip()
     if mode not in ("sw", "hw", "auto"):
-        mode = "auto"
+        mode = "hw"
 
-    # ---- compute attention ----
-    err = None
+    # SW 분류는 항상 해두자 (비교용)
+    pred_sw = None
+    pred_sw_err = None
+    try:
+        pred_sw = verify.predict_sw_only(text, max_len=int(max_len))
+    except Exception as e:
+        pred_sw_err = str(e)
+
     tokens = None
     attn = None
     used_mode = mode
 
+    pred_hw = None
+    pred_hw_err = None
+    auto_fallback_err = None
+
+    # ======================
+    # Heatmap source 선택
+    # ======================
     if mode == "sw":
-        tokens, attn = compute_attention_sw(
-            text,
-            baseline_model,
-            tokenizer,
-            layer=layer,
-            head=head,
-            max_len=max_len,
-            device=DEVICE,
+        tokens, attn, _pred = verify.compute_sw_all(
+            text, layer=layer, head=head, max_len=int(max_len)
         )
         used_mode = "sw"
 
     elif mode == "hw":
-        tokens, attn = compute_attention_hw(
-            text,
-            approx_model,
-            tokenizer,
-            port=port,
-            baud=int(baud),
-            layer=layer,
-            head=head,
-            max_len=max_len,
-            device=DEVICE,
-        )
-        used_mode = "hw"
-
-    else:  # auto
         try:
-            tokens, attn = compute_attention_hw(
+            tokens, attn, pred_hw = verify.compute_hw_all(
                 text,
-                approx_model,
-                tokenizer,
-                port=port,
-                baud=int(baud),
                 layer=layer,
                 head=head,
-                max_len=max_len,
-                device=DEVICE,
+                max_len=int(max_len),
+                port=port,
+                baud=int(baud),
             )
             used_mode = "hw"
         except Exception as e:
-            err = str(e)
-            tokens, attn = compute_attention_sw(
+            pred_hw_err = str(e)
+            # HW 강제 모드에서 HW 실패하면: 그래도 SW heatmap 보여주게 처리(사용자 경험)
+            tokens, attn, _pred = verify.compute_sw_all(
+                text, layer=layer, head=head, max_len=int(max_len)
+            )
+            used_mode = "sw"
+            auto_fallback_err = pred_hw_err
+
+    else:
+        # AUTO: HW 시도 -> 실패하면 SW heatmap
+        try:
+            tokens, attn, pred_hw = verify.compute_hw_all(
                 text,
-                baseline_model,
-                tokenizer,
                 layer=layer,
                 head=head,
-                max_len=max_len,
-                device=DEVICE,
+                max_len=int(max_len),
+                port=port,
+                baud=int(baud),
+            )
+            used_mode = "hw"
+        except Exception as e:
+            auto_fallback_err = str(e)
+            tokens, attn, _pred = verify.compute_sw_all(
+                text, layer=layer, head=head, max_len=int(max_len)
             )
             used_mode = "sw"
 
-    # store
+    # 저장
     attn_id = str(uuid.uuid4())
     ATTN_STORE[attn_id] = {
         "tokens": tokens,
@@ -210,39 +130,65 @@ def attention_generate(
             "max_len": int(max_len),
             "port": port,
             "baud": int(baud),
-            "auto_hw_error": err,
+            "auto_fallback_err": auto_fallback_err,
+            "pred_hw_err": pred_hw_err,
+            "pred_sw_err": pred_sw_err,
+            "pred_sw": pred_sw,
+            "pred_hw": pred_hw,
         },
     }
 
     T = int(attn.shape[0])
-    err_html = (
-        f"<div style='color:#c33; margin-top:8px;'>AUTO fallback: HW failed → SW used.<br/><pre>{err}</pre></div>"
-        if err
-        else ""
-    )
+
+    # 비교 표시
+    sw_line = "N/A"
+    if pred_sw is not None:
+        sw_line = f"{pred_sw['pred_label']} (Ppos={pred_sw['p_pos']:.3f}, Pneg={pred_sw['p_neg']:.3f})"
+
+    hw_line = "N/A"
+    if pred_hw is not None:
+        hw_line = f"{pred_hw['pred_label']} (Ppos={pred_hw['p_pos']:.3f}, Pneg={pred_hw['p_neg']:.3f})"
+
+    match_line = "N/A"
+    if (pred_sw is not None) and (pred_hw is not None):
+        match_line = "O" if pred_sw["pred_id"] == pred_hw["pred_id"] else "X"
+
+    # 에러 블록
+    err_blocks = ""
+    if auto_fallback_err:
+        err_blocks += f"""
+        <div style='color:#c33; margin-top:8px;'>
+          <b>AUTO fallback:</b> HW failed → SW used.
+          <pre style="background:#f7f7f7; padding:8px; overflow:auto;">{auto_fallback_err}</pre>
+        </div>
+        """
+    if pred_hw_err and mode == "hw":
+        err_blocks += f"""
+        <div style='color:#c33; margin-top:8px;'>
+          <b>HW error:</b>
+          <pre style="background:#f7f7f7; padding:8px; overflow:auto;">{pred_hw_err}</pre>
+        </div>
+        """
+    if pred_sw_err:
+        err_blocks += f"""
+        <div style='color:#c33; margin-top:8px;'>
+          <b>SW prediction error:</b>
+          <pre style="background:#f7f7f7; padding:8px; overflow:auto;">{pred_sw_err}</pre>
+        </div>
+        """
 
     return HTMLResponse(
-        f"""
-    <html>
-      <head>
-        <title>Attention Heatmap</title>
-        <style>
-          body {{ font-family: Arial; margin: 24px; }}
-          .meta {{ color: #555; margin-top: 8px; }}
-          img {{ border: 1px solid #ddd; margin-top: 16px; max-width: 900px; }}
-          a {{ display:inline-block; margin-top: 12px; }}
-          pre {{ background: #f7f7f7; padding: 8px; overflow:auto; }}
-        </style>
-      </head>
-      <body>
-        <h2>Attention Heatmap</h2>
-        <div class="meta">mode={used_mode}, layer={layer}, head={head}, T={T}</div>
-        {err_html}
-        <img src="/attn_heatmap.png?id={attn_id}" />
-        <div><a href="/attention_ui">Back</a></div>
-      </body>
-    </html>
-    """
+        ui.render_result_page(
+            used_mode=used_mode,
+            layer=int(layer),
+            head=int(head),
+            T=int(T),
+            attn_id=attn_id,
+            hw_line=hw_line,
+            sw_line=sw_line,
+            match_line=match_line,
+            err_blocks=err_blocks,
+        )
     )
 
 
@@ -257,14 +203,14 @@ def attn_heatmap_png(id: str):
 
     T = int(attn.shape[0])
 
-    fig = plt.figure(figsize=(7, 7))
+    fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111)
     ax.imshow(attn, aspect="auto")
     ax.set_title(
         f"Attention heatmap (mode={meta['mode']}, layer={meta['layer']}, head={meta['head']}, T={T})"
     )
 
-    # 토큰 라벨은 너무 길면 UI가 깨지므로, 작을 때만 표시
+    # 토큰 라벨은 너무 길면 깨지므로 작을 때만 표시
     if T <= 40:
         ax.set_xticks(range(T))
         ax.set_yticks(range(T))
