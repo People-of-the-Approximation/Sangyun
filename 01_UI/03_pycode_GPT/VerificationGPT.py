@@ -1,36 +1,40 @@
 # VerificationGPT.py
-from typing import Optional, Tuple
+from __future__ import annotations
+
+from typing import Optional
 import numpy as np
 import torch
 
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from softmax_packet import softmax_fpga_variable
 
-import UART_base
-from Attention_approx import attention  # attention(Q,K,V,ser, return_attn=True)
-
-# transformers GPT2 attention class (version differences handled)
 try:
     from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 except Exception as e:
     raise RuntimeError(
-        "Cannot import GPT2Attention from transformers. Check your transformers version."
+        "Cannot import GPT2Attention. Check your transformers version."
     ) from e
+
+
+def softmax_local(x: np.ndarray) -> np.ndarray:
+    x = x.astype(np.float64)
+    m = np.max(x)
+    e = np.exp(x - m)
+    s = np.sum(e)
+    if s <= 0:
+        return np.zeros_like(x, dtype=np.float64)
+    return e / s
 
 
 class GPT2AttentionSoftmaxApprox(GPT2Attention):
     """
-    - FPGA(UART)로 softmax를 계산하는 GPT2 attention 구현
-    - output_attentions=True일 때 attention matrix를 self.last_attn에 저장
-      self.last_attn shape: (B, H, T, T) numpy float64
-
-    유지하는 스타일:
-    - padding mask는 'V를 0으로' 처리 (BERT 코드 스타일 유지)
-    - causal(미래 토큰 참조 금지)은 score를 pad_value(-32.0)로 내려서 softmax에서 거의 0 되게 처리
-      (HW softmax는 mask 연산을 모르므로, score를 낮춰서 마스킹 효과를 냄)
+    GPT-2 Attention with hybrid softmax:
+      - row 0 softmax: HW(UART) if serial is available
+      - row 1.. softmax: SW(local)
+    Stores last_attn for heatmap.
     """
 
     def __init__(self, config, is_cross_attention=False, layer_idx=None):
-        # transformers 버전에 따라 init 시그니처가 달라서 안전하게 처리
+        # transformers 버전마다 init signature가 달라서 안전하게 처리
         try:
             super().__init__(
                 config, is_cross_attention=is_cross_attention, layer_idx=layer_idx
@@ -39,50 +43,60 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
             super().__init__(config, is_cross_attention=is_cross_attention)
 
         self.ser = None
-        self.last_attn: Optional[np.ndarray] = None  # (B,H,T,T)
+        self.last_attn: Optional[np.ndarray] = None
 
-        # softmax 패딩값(=Q6.10에서 0x8000로 saturate 되는 -32.0)
+        # ✅ 추가: heatmap 강제 저장 플래그
+        self.force_store_attn: bool = False
+
+        # HW softmax 입력에서 mask 효과를 내기 위한 낮은 값
+        # (네가 말한 "-32를 0x8000으로 처리" 기준)
         self.pad_value = -32.0
 
     def set_serial(self, ser):
         self.ser = ser
 
+    # ✅ 추가: 외부에서 last_attn 저장 강제 토글
+    def set_force_store_attn(self, flag: bool):
+        self.force_store_attn = bool(flag)
+
     @staticmethod
     def _shape_qkv(x: torch.Tensor, num_heads: int, head_dim: int) -> torch.Tensor:
-        # x: (B,T,embed) -> (B,H,T,Dh)
+        # (B,T,embed) -> (B,H,T,Dh)
         B, T, _ = x.shape
         return x.view(B, T, num_heads, head_dim).permute(0, 2, 1, 3).contiguous()
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
-        layer_past: Optional[Tuple[torch.Tensor]] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        head_mask: Optional[torch.Tensor] = None,
-        encoder_hidden_states: Optional[torch.Tensor] = None,
-        encoder_attention_mask: Optional[torch.Tensor] = None,
-        use_cache: bool = False,
-        output_attentions: bool = False,
+        hidden_states,
+        past_key_value=None,  # ✅ 최신 transformers 인자
+        attention_mask=None,
+        head_mask=None,
+        encoder_hidden_states=None,
+        encoder_attention_mask=None,
+        use_cache=False,
+        output_attentions=False,
+        **kwargs,  # ✅ 버전 차이 흡수
     ):
-        if self.ser is None:
-            raise RuntimeError(
-                "UART serial is not set. Call set_serial(ser) before forward()."
-            )
+        layer_past = past_key_value
 
-        # ---- 원본 GPT2Attention 로직의 큰 흐름만 따라가서 Q,K,V 만든다 ----
-        # c_attn: (B,T,3*embed) -> split
+        # ✅ 기존 want_attn 로직 + force_store_attn 반영
+        # (원본은 output_attentions/kwargs만 반영 :contentReference[oaicite:1]{index=1})
+        want_attn = bool(output_attentions) or bool(
+            kwargs.get("output_attentions", False)
+        )
+        want_attn = want_attn or bool(getattr(self, "force_store_attn", False))
+
+        # ---- QKV ----
         qkv = self.c_attn(hidden_states)
         query, key, value = qkv.split(self.split_size, dim=2)
 
-        # shape to (B,H,T,Dh)
         query = self._shape_qkv(query, self.num_heads, self.head_dim)
         key = self._shape_qkv(key, self.num_heads, self.head_dim)
         value = self._shape_qkv(value, self.num_heads, self.head_dim)
 
-        # past 처리(캐시) – 데모/검증 목적이면 보통 off지만, 안전하게 처리
+        # past concat
         if layer_past is not None:
             past_key, past_value = layer_past
-            # past_key/value: (B,H,Tpast,Dh)
             key = torch.cat([past_key, key], dim=2)
             value = torch.cat([past_value, value], dim=2)
 
@@ -91,135 +105,88 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
         B, H, Tq, Dh = query.shape
         Tk = key.shape[2]
 
-        # attention_mask: 보통 (B,1,1,Tk) 형태(또는 (B,1,Tk))
+        # attention_mask를 (B,Tk)로 만들어서 masked token의 V=0 처리에 사용
         mask_np = None
         if attention_mask is not None:
-            # 가능한 형태들을 최대한 (B,Tk)로 만든다
             m = attention_mask
             while m.dim() > 2:
                 m = m.squeeze(1)
-            # 이제 (B,Tk) 기대. 값은 1/0 또는 0/큰음수 형태 모두 가능
             mask_np = m.detach().cpu().numpy()
 
-        if output_attentions:
+        if want_attn:
             self.last_attn = np.zeros((B, H, Tq, Tk), dtype=np.float64)
         else:
             self.last_attn = None
 
-        # ---- HW softmax 기반 attention 계산 ----
-        out = torch.zeros((B, H, Tq, Dh), device=query.device, dtype=query.dtype)
-
-        # numpy 변환은 head별로 진행
         q_np_all = query.detach().cpu().numpy()
         k_np_all = key.detach().cpu().numpy()
         v_np_all = value.detach().cpu().numpy()
 
+        out = torch.zeros((B, H, Tq, Dh), device=query.device, dtype=query.dtype)
+
         for b in range(B):
-            # padding mask 반영(기존 스타일 유지): masked token의 V를 0으로
+            masked = None
             if mask_np is not None:
-                # mask가 0/1이면 0인 곳을 masked로 취급.
-                # mask가 0/큰음수이면 큰음수(<0)인 곳을 masked로 취급.
-                if np.issubdtype(mask_np.dtype, np.floating) or np.issubdtype(
-                    mask_np.dtype, np.integer
-                ):
-                    # heuristic
-                    masked = (mask_np[b] == 0) | (mask_np[b] < 0)
-                else:
-                    masked = mask_np[b] < 0
-            else:
-                masked = None
+                masked = (mask_np[b] == 0) | (mask_np[b] < 0)
 
             for h in range(H):
                 Q = q_np_all[b, h]  # (Tq,Dh)
                 K = k_np_all[b, h]  # (Tk,Dh)
                 V = v_np_all[b, h]  # (Tk,Dh)
 
+                Vm = V.copy()
                 if masked is not None:
-                    Vm = V.copy()
                     Vm[masked] = 0.0
-                else:
-                    Vm = V
 
-                # causal mask(미래 토큰 금지):
-                # attention()은 mask 개념이 없으니, score를 pad_value(-32)로 깔아서 softmax에서 거의 0이 되게 만든다.
-                # 이를 위해 attention() 내부에서 쓰는 scores = (K@Q[i])/sqrt(dk) 전에 직접 score를 만들기 어렵지만,
-                # attention()을 그대로 쓰려면 'K'를 변형할 수밖에 없다.
-                #
-                # 여기서는 더 안전하게: attention()을 쓰지 않고, row마다 score를 만들어 softmax_fpga_variable에 태우는 방식이 필요하지만
-                # 네 코드의 "attention()"은 이미 HW softmax 호출을 포함하고 있고 row-loop 구조라서,
-                # causal mask 처리는 attention() 안의 softmax input vector(scores)에 적용하는 형태로 바꾸는 게 맞다.
-                #
-                # => 최소 변경으로 유지하기 위해: 아래처럼 attention()을 "row별로 score를 만든 뒤" softmax_fpga_variable을 부르는 구조로 두고,
-                # causal mask는 score[i, j>i]를 pad_value로 치환한다.
-                #
-                # 그래서 여기서는 Attention_approx.attention() 대신, 동일한 로직을 이 클래스 안에서 row-by-row로 실행한다.
+                attn_mat = np.zeros((Tq, Tk), dtype=np.float64) if want_attn else None
+                out_np = np.zeros((Tq, Dh), dtype=np.float64)
 
-                Nq = Q.shape[0]
-                Nk = K.shape[0]
+                # causal mask: query index i가 참조할 수 있는 key 최대 인덱스
+                past_len = Tk - Tq  # past 포함 시
 
-                attn_mat = (
-                    np.zeros((Nq, Nk), dtype=np.float64) if output_attentions else None
-                )
-                out_np = np.zeros((Nq, Vm.shape[1]), dtype=np.float64)
+                for i in range(Tq):
+                    scores = (K @ Q[i].T) / np.sqrt(Dh)  # (Tk,)
 
-                # row-wise
-                for i in range(Nq):
-                    scores = (K @ Q[i].T) / np.sqrt(Dh)  # (Nk,)
-
-                    # causal: j > (i + past_len) 를 막아야 함.
-                    # 현재 key는 past 포함 길이 Tk, query는 현재 시점 길이 Tq.
-                    # 간단히: query index i가 key index 기준으로 "끝쪽"에 해당한다고 보고,
-                    #         허용되는 key는 [0 .. (Tk - Tq + i)]까지.
-                    # past_len = Tk - Tq
-                    past_len = Tk - Tq
+                    # causal: 미래 토큰은 pad_value로 내려서 softmax에서 거의 0 되게
                     allowed_max = past_len + i
-                    if allowed_max + 1 < Nk:
+                    if allowed_max + 1 < Tk:
                         scores[allowed_max + 1 :] = self.pad_value
 
-                    # HW softmax 호출: Attention_approx.softmax_fpga_variable을 통해 들어감
-                    # (pad_value=-32.0 유지)
-                    from softmax_packet import softmax_fpga_variable
+                    # ✅ row0만 HW softmax (UART 연결 시), 그 외 SW local
+                    # (원본 그대로 :contentReference[oaicite:2]{index=2})
+                    if (i == 0) and (self.ser is not None):
+                        probs = softmax_fpga_variable(
+                            self.ser,
+                            scores,
+                            pad_value=self.pad_value,
+                            deadline_s=2.0,
+                        )
+                        probs = np.asarray(probs, dtype=np.float64)
+                    else:
+                        probs = softmax_local(scores)
 
-                    probs = softmax_fpga_variable(
-                        self.ser,
-                        scores,
-                        pad_value=self.pad_value,
-                        deadline_s=2.0,
-                    )  # (Nk,)
-
-                    if output_attentions:
+                    if want_attn:
                         attn_mat[i, :] = probs
 
-                    out_np[i, :] = np.asarray(probs, dtype=np.float64) @ Vm
+                    out_np[i, :] = probs @ Vm
 
                 out[b, h] = torch.tensor(out_np, device=query.device, dtype=query.dtype)
 
-                if output_attentions:
+                if want_attn:
                     self.last_attn[b, h, :, :] = attn_mat
 
-        # merge heads: (B,H,T,Dh)->(B,T,embed)
+        # merge heads -> (B,T,embed)
         context = out.permute(0, 2, 1, 3).contiguous().view(B, Tq, H * Dh)
-        # output projection
         attn_output = self.c_proj(context)
         attn_output = self.resid_dropout(attn_output)
 
-        # transformers 관례: (attn_output, present, attn_weights) 형태
-        # 우리는 HW attention을 self.last_attn에 저장하고, return_attentions는 None로 둬도 됨.
-        # 하지만 GPT2 모델이 out.attentions를 구성하려면 attn_weights를 반환해야 함.
-        # -> SW baseline은 원래 모델로 attentions 받으면 되고,
-        # -> HW approx는 get_last_attention_matrix로 가져오니 여기서는 None 반환 유지 가능.
-        attn_weights = None
-        return attn_output, present, attn_weights
+        # attn_weights는 None (heatmap은 last_attn 사용)
+        return attn_output, present, None
 
 
 def replace_gpt2_attention(model: torch.nn.Module, NewAttnClass):
-    """
-    GPT2 transformer blocks의 attention을 NewAttnClass로 교체
-    """
     if not hasattr(model, "transformer") or not hasattr(model.transformer, "h"):
-        raise RuntimeError(
-            "This model does not look like a GPT-2 architecture (missing transformer.h)."
-        )
+        raise RuntimeError("Model is not GPT-2 style (missing transformer.h).")
 
     for idx, block in enumerate(model.transformer.h):
         old_attn = block.attn
@@ -228,18 +195,15 @@ def replace_gpt2_attention(model: torch.nn.Module, NewAttnClass):
                 model.config, is_cross_attention=False, layer_idx=idx
             )
         except TypeError:
-            new_attn = NewAttnClass(model.config)
+            new_attn = NewAttnClass(model.config, is_cross_attention=False)
 
         new_attn.load_state_dict(old_attn.state_dict(), strict=True)
         block.attn = new_attn
 
 
 def set_serial_to_model(model: torch.nn.Module, ser):
-    """
-    교체된 attention 모듈들에 UART serial 핸들 주입
-    """
     if not hasattr(model, "transformer") or not hasattr(model.transformer, "h"):
-        raise RuntimeError("Model has no transformer.h blocks.")
+        raise RuntimeError("Model is not GPT-2 style.")
 
     for block in model.transformer.h:
         attn = block.attn
@@ -247,13 +211,18 @@ def set_serial_to_model(model: torch.nn.Module, ser):
             attn.set_serial(ser)
 
 
+def clear_serial_from_model(model: torch.nn.Module):
+    if not hasattr(model, "transformer") or not hasattr(model.transformer, "h"):
+        return
+    for block in model.transformer.h:
+        attn = block.attn
+        if hasattr(attn, "set_serial"):
+            attn.set_serial(None)
+
+
 def get_last_attention_matrix(
     model: torch.nn.Module, layer: int = 0, head: int = 0
 ) -> np.ndarray:
-    """
-    마지막 forward 호출에서 저장된 attention matrix를 가져옴.
-    반환 shape: (T,T) (batch=1 기준)
-    """
     blocks = model.transformer.h
     L = len(blocks)
     layer = max(0, min(int(layer), L - 1))
@@ -266,36 +235,15 @@ def get_last_attention_matrix(
 
     a = attn.last_attn  # (B,H,T,Tk)
     B, H, T, Tk = a.shape
-    if B < 1:
-        raise RuntimeError("Invalid last_attn batch size.")
     head = max(0, min(int(head), H - 1))
     return np.asarray(a[0, head], dtype=np.float64)
 
 
-def build_models_gpt(device: str = "cpu", model_name: str = "gpt2"):
-    """
-    Returns:
-      tokenizer
-      baseline_model (SW attention)
-      approx_model (HW attention: attention replaced)
-
-    NOTE:
-    - GPT 계열은 'SST-2로 파인튜닝된 GPT2 분류 모델'을 쓰는 게 정석.
-    - model_name을 네가 쓰는 체크포인트로 바꿔도 됨.
-    """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    # GPT2는 pad_token이 없어서 attention_mask/padding 쓸 때 필요
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    baseline_model = (
-        AutoModelForSequenceClassification.from_pretrained(model_name).to(device).eval()
-    )
-
-    approx_model = (
-        AutoModelForSequenceClassification.from_pretrained(model_name).to(device).eval()
-    )
-
-    replace_gpt2_attention(approx_model, GPT2AttentionSoftmaxApprox)
-    return tokenizer, baseline_model, approx_model
+# ✅ 추가: verify.py에서 쓰는 helper (heatmap 강제 저장 on/off)
+def set_force_store_attn_to_model(model: torch.nn.Module, flag: bool):
+    if not hasattr(model, "transformer") or not hasattr(model.transformer, "h"):
+        return
+    for block in model.transformer.h:
+        attn = block.attn
+        if hasattr(attn, "set_force_store_attn"):
+            attn.set_force_store_attn(flag)
