@@ -15,8 +15,8 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles  # ✅ 추가
 
-import ui  # ✅ page2(결과 페이지) 유지용
-import ui_page1  # ✅ page1(디자인 UI)용
+import ui_main_page
+import ui_bert_page
 import verify
 
 # =========================
