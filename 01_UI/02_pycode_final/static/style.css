@@ -64,7 +64,6 @@ body{
   display: grid;
   grid-template-columns: 1fr 4px 160px;
 
-  /* ✅ 여기서 "무조건" 높이 줄어듦 */
   height: 160px;
 
   overflow: hidden;
