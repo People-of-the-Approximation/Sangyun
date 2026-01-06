@@ -33,6 +33,8 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
         except TypeError:
             super().__init__(config, is_cross_attention=is_cross_attention)
 
+        self.layer_idx = layer_idx
+
         self.ser = None
         self.last_attn: Optional[np.ndarray] = None
         self.force_store_attn: bool = False
