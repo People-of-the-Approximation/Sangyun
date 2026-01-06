@@ -13,11 +13,11 @@ def render_bert_result_page(
     sw_ppos: float,
     sw_pneg: float,
     match_line: str,
-    err_blocks: str = "",
+    err_blocks: str = "",  # 받아도 UI에서는 아예 무시(렌더링 안 함)
 ):
     is_negative = hw_pneg >= hw_ppos
     big_label = "NEGATIVE" if is_negative else "POSITIVE"
-    label_color = "#FC5230" if is_negative else "#1B4F20"  # ✅ POS=초록, NEG=주황
+    label_color = "#FC5230" if is_negative else "#1B4F20"  # NEG=주황, POS=초록
 
     hw_ppos_s = f"{hw_ppos*100:.1f}%"
     hw_pneg_s = f"{hw_pneg*100:.1f}%"
@@ -31,7 +31,6 @@ def render_bert_result_page(
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>BERT Attention</title>
 
-        <!-- ✅ Satoshi 로드 (static/style.css에 @font-face 있음) -->
         <link rel="stylesheet" href="/static/style.css" />
 
         <style>
@@ -48,7 +47,7 @@ def render_bert_result_page(
             margin: 0;
             background: var(--bg);
             color: var(--text);
-            font-family: 'Satoshi', Arial, sans-serif; /* ✅ 전부 Satoshi */
+            font-family: 'Satoshi', Arial, sans-serif;
           }}
 
           .wrap {{
@@ -72,66 +71,62 @@ def render_bert_result_page(
             max-width: 64vw;
             width: auto;
             height: auto;
+            border-radius: 14px;
           }}
 
           .right {{
             flex: 1 1 auto;
             min-width: 360px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
             position: relative;
-            font-family: 'Satoshi', Arial, sans-serif; /* ✅ 명시 */
           }}
 
-          /* ✅ 상단 meta 텍스트 완전히 비활성화 */
-          .meta {{
-            display: none;
-          }}
+          .meta {{ display: none; }}
 
-          /* ✅ POSITIVE/NEGATIVE 위치 고정 (에러 유무로 흔들리지 않게) */
+          /* ✅ 오른쪽 영역에서 "라벨" 중앙 */
           .big {{
             position: absolute;
-            top: 90px;      /* 필요하면 여기만 조절 */
-            left: 0;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
 
-            font-family: 'Satoshi', Arial, sans-serif;
-            font-size: 92px;
-            font-weight: 500;     /* Satoshi Medium 톤 */
+            font-size: 112px;
+            font-weight: 500;
             letter-spacing: 1px;
             color: var(--label);
             line-height: 1.0;
             margin: 0;
+            white-space: nowrap;
           }}
 
-          /* ✅ 텍스트 영역: Satoshi + 크기 조절 */
+          /*
+            ✅ stats는 big보다 30px 아래에 고정
+            - big의 기준이 top:50% 이고 transform(-50%)이므로
+            - stats는 "center + 30px"로 명확히 분리
+          */
           .stats {{
-            display: grid;
-            grid-template-columns: 200px 1fr;
-            row-gap: 10px;
-            column-gap: 20px;
+            position: absolute;
+            top: calc(50% + 112px / 2 + 30px);
+            left: 50%;
+            transform: translateX(-50%);
 
-            margin-top: 220px;    /* big 아래로 내려줌 */
-            font-family: 'Satoshi', Arial, sans-serif;
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            row-gap: 10px;
+            column-gap: 28px;
           }}
 
           .k {{
-            font-family: 'Satoshi', Arial, sans-serif;
-            font-size: 18px;
+            font-size: 25px;
             font-weight: 500;
             color: var(--muted);
+            white-space: nowrap;
           }}
 
           .v {{
-            font-family: 'Satoshi', Arial, sans-serif;
-            font-size: 22px;
+            font-size: 25px;
             font-weight: 500;
             color: var(--text);
-          }}
-
-          .err {{
-            margin-top: 18px;
-            font-family: 'Satoshi', Arial, sans-serif;
+            white-space: nowrap;
           }}
 
           .back {{
@@ -141,7 +136,6 @@ def render_bert_result_page(
             font-size: 28px;
             color: #111;
             text-decoration: none;
-            font-family: 'Satoshi', Arial, sans-serif;
           }}
 
           .back:hover {{
@@ -172,7 +166,7 @@ def render_bert_result_page(
               <div class="v">{match_line}</div>
             </div>
 
-            <div class="err">{err_blocks}</div>
+            <!-- ✅ 에러 UI 완전 제거 (err_blocks 출력 안 함) -->
 
             <a class="back" href="/attention_ui">Back</a>
           </div>
