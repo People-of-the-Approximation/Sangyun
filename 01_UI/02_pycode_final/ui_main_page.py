@@ -26,11 +26,9 @@ def render_page1(
 
           <form class="input-wrap" method="post" action="/attention_generate">
 
-            <!-- 🔶 주황 박스 -->
             <div class="input-frame">
               <div class="input-left">
 
-                <!-- ✅ 상단 절반 비워서 "중간부터" 시작 -->
                 <div class="input-spacer"></div>
 
                 <div class="input-label">영어 문장을 입력해주세요</div>
@@ -63,7 +61,6 @@ def render_page1(
               </div>
             </div>
 
-            <!-- ✅ 주황 박스 밖 / 아래 / 오른쪽 : 입력 UI -->
             <div class="control-under">
               <div class="control-row">
                 <label>Model</label>

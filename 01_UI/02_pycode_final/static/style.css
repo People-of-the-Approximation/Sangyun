@@ -1,13 +1,15 @@
 /* ===============================
    Custom Fonts
 ================================ */
+/* Define the 'Satoshi' font family */
 @font-face {
   font-family: 'Satoshi';
-  src: url('/static/fonts/Satoshi-Medium.otf') format('opentype');
-  font-weight: 500;
+  src: url('/static/fonts/Satoshi-Medium.otf') format('opentype'); /* File path */
+  font-weight: 500; /* Medium weight */
   font-style: normal;
 }
 
+/* Define the 'KoPubDotum' font family (likely for Korean text) */
 @font-face {
   font-family: 'KoPubDotum';
   src: url('/static/fonts/KoPubWorld_Dotum_Pro_Medium.otf') format('opentype');
@@ -15,113 +17,131 @@
   font-style: normal;
 }
 
-:root{
-  --primary: #FC5230;
-  --text: #1b1b1b;
-  --bg: #ffffff;
+/* Define global CSS variables (colors) */
+:root {
+  --primary: #FC5230; /* Main orange color */
+  --text: #1b1b1b;    /* Main text color (dark grey) */
+  --bg: #ffffff;      /* Background color (white) */
 }
 
-*{ box-sizing: border-box; }
+/* Apply border-box sizing to all elements for easier sizing */
+/* (Padding and border are included in the element's total width/height) */
+* { box-sizing: border-box; }
 
-html, body{
-  height: 100%;
-  margin: 0;
-  padding: 0;
+/* Set up full height for the page */
+html, body {
+  height: 100%;       /* Fill the viewport height */
+  margin: 0;          /* Remove default browser margin */
+  padding: 0;         /* Remove default browser padding */
   background: var(--bg);
   color: var(--text);
-  font-family: 'Satoshi', Arial, sans-serif;
+  font-family: 'Satoshi', Arial, sans-serif; /* Default font stack */
 }
 
-body{
+/* Center the content vertically and horizontally on the screen */
+body {
   display: flex;
-  justify-content: center;
-  align-items: center;
+  justify-content: center; /* Center horizontally */
+  align-items: center;     /* Center vertically */
 }
 
-.page{
-  width: min(1400px, 92vw);
-  margin: 0 auto;
+/* Main container for the page content */
+.page {
+  /* Width is 1400px or 92% of the viewport, whichever is smaller */
+  width: min(1400px, 92vw); 
+  margin: 0 auto;  /* Center the container horizontally */
   padding: 0;
-  transform: translateY(20px);
+  transform: translateY(20px); /* Move the page down slightly for visual balance */
 }
 
-.hero-title{
+/* Big title styling */
+.hero-title {
   font-size: 96px;
   font-weight: 500;
-  letter-spacing: -1px;
-  color: var(--primary);
-  margin: 0 0 22px 0;
+  letter-spacing: -1px;     /* Tighten letter spacing slightly */
+  color: var(--primary);    /* Use the orange variable */
+  margin: 0 0 22px 0;       /* Margin: Top 0, Right 0, Bottom 22px, Left 0 */
 }
 
-.input-wrap{ margin-top: 6px; }
+/* Wrapper for the input area to add top spacing */
+.input-wrap { margin-top: 6px; }
 
-/* ================= 주황 박스 ================= */
-.input-frame{
+/* ================= The Orange Input Box ================= */
+.input-frame {
   width: 100%;
-  border: 4px solid var(--primary);
-  border-radius: 8px;
+  border: 4px solid var(--primary); /* Thick orange border */
+  border-radius: 8px;               /* Rounded corners */
 
+  /* Use Grid layout to split the box: Input | Line | Icon */
   display: grid;
-  grid-template-columns: 1fr 4px 160px;
+  grid-template-columns: 1fr 4px 160px; /* 1fr (flexible) | 4px (divider) | 160px (icon area) */
 
-  height: 160px;
-
-  overflow: hidden;
+  height: 160px;    /* Fixed height for the box */
+  overflow: hidden; /* Hide anything that goes outside the border */
 }
 
+/* Left side: Text Input Area */
 .input-left {
-  padding: 25px 24px 0 24px; /* 상 우 하 좌 여백 */
+  /* Padding: Top 25px, Right 24px, Bottom 0, Left 24px */
+  /* Top padding is 25px to push the text down visually */
+  padding: 25px 24px 0 24px; 
   height: 100%;
 }
 
-.input-label{
+/* "Label" text above the input */
+.input-label {
   font-family: 'KoPubDotum', sans-serif;
   font-size: 35px;
   font-weight: 500;
-  color: #7A7A7A;
-  margin: 0 0 6px 0;
+  color: #7A7A7A;       /* Grey color */
+  margin: 0 0 6px 0;    /* Bottom margin for spacing */
 }
 
-.textarea{
+/* The actual text input field */
+.textarea {
   width: 100%;
-  border: none;
-  outline: none;
-  resize: none;
+  border: none;      /* Remove default border */
+  outline: none;     /* Remove focus outline (blue glow) */
+  resize: none;      /* Disable manual resizing handle */
 
   font-family: 'KoPubDotum', sans-serif;
   font-size: 35px;
   font-weight: 500;
   line-height: 1.2;
 
-  background: transparent;
+  background: transparent; /* Transparent background */
 
-  /* ✅ 남은 공간에서 입력되게 */
+  /* Ensure it can take up space */
   min-height: 0;
 }
 
-.textarea::placeholder{
+/* Placeholder text styling */
+.textarea::placeholder {
   font-family: 'KoPubDotum', sans-serif;
   font-weight: 500;
-  color: #9C9C9C;
+  color: #9C9C9C; /* Lighter grey for placeholder */
 }
 
-.input-divider{
+/* The vertical orange line separator */
+.input-divider {
   background: var(--primary);
 }
 
-.input-right{
+/* Right side: Icon Button Area */
+.input-right {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: center;      /* Center content vertically */
+  justify-content: center;  /* Center content horizontally */
   padding: 0;
 }
 
-.icon-btn{
+/* The button wrapping the icon */
+.icon-btn {
   width: 100%;
   height: 100%;
-  background: none;
-  border: none;
-  cursor: pointer;
+  background: none;  /* No background */
+  border: none;      /* No border */
+  cursor: pointer;   /* Show pointer hand on hover */
   padding: 0;
 
   display: flex;
@@ -129,29 +149,32 @@ body{
   justify-content: center;
 }
 
-.icon-btn:hover{
-  transform: scale(1.02);
+/* Hover effect for the button */
+.icon-btn:hover {
+  transform: scale(1.02); /* Slightly enlarge the button */
 }
 
-.chip-icon{
-  width: 80%;
-  height: 80%;
-  object-fit: contain;
-  display: block;
+/* The image inside the button */
+.chip-icon {
+  width: 80%;           /* Take up 80% of the container width */
+  height: 80%;          /* Take up 80% of the container height */
+  object-fit: contain;  /* Keep aspect ratio, ensure image fits inside */
+  display: block;       /* Remove default inline image spacing */
 }
 
-/* ================= 박스 아래 컨트롤 ================= */
-.control-under{
+/* ================= Controls Below the Box ================= */
+.control-under {
   width: 100%;
   display: flex;
-  justify-content: flex-end;
-  margin-top: 10px;
+  justify-content: flex-end; /* Align items to the right side */
+  margin-top: 10px;          /* Space above this section */
 }
 
-.control-row{
+/* Each row of controls (Label + Input) */
+.control-row {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: center; /* Center items vertically */
+  gap: 12px;           /* Space between label and input */
 
   color: #A4A4A4;
   font-size: 14px;
@@ -159,17 +182,19 @@ body{
   font-family: 'Satoshi', Arial, sans-serif;
 }
 
-.control-row label{
+/* Styling for labels inside control row */
+.control-row label {
   color: #A4A4A4;
   font-weight: 500;
   font-family: 'Satoshi', Arial, sans-serif;
 }
 
+/* Styling for dropdowns (select) and text inputs */
 .control-row select,
-.control-row input{
+.control-row input {
   color: #A4A4A4;
-  border: 1px solid #A4A4A4;
-  background: transparent;
+  border: 1px solid #A4A4A4; /* Thin grey border */
+  background: transparent;   /* Transparent background */
 
   padding: 4px 6px;
   font-size: 14px;
