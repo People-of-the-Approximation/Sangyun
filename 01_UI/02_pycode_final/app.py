@@ -74,11 +74,6 @@ def _run_gpt_demo(
     """
     verify.py의 run_gpt_demo 호출.
     기대 반환: (sw_text, hw_text, attn_np, hw_error_str_or_None)
-
-    - mode == "sw": HW(UART) 시도 없이 SW만 보여주는 동작을 원하지만,
-      verify.run_gpt_demo 내부에서 HW 실패 시 자동 fallback 하도록 작성되어 있으면
-      여기서는 동일 호출로 처리 가능.
-      (단, UX 개선을 위해 mode=sw일 때는 port open 시도 자체를 막는 것을 권장.)
     """
     mode = (mode or "hw").lower().strip()
     if mode not in ("sw", "hw", "auto"):
@@ -90,13 +85,8 @@ def _run_gpt_demo(
             "Please implement run_gpt_demo(text, port, baud, hw_layer, hw_head, max_new_tokens)"
         )
 
-    # ✅ mode가 sw이면 port가 잘못돼도 HW 시도 자체를 안 하도록 '가짜 포트'를 넘기기보단,
-    # verify.run_gpt_demo가 sw-only를 지원하는 게 가장 깔끔함.
-    # 현재는 verify.run_gpt_demo가 HW 실패 시 SW로 마무리하도록 작성되었다는 전제하에,
-    # 동일 호출로 진행하되, mode=sw면 아래에서 port를 빈 문자열로 넘겨 HW open 실패를 빠르게 유도할 수 있음.
+    # mode=sw면 HW 시도를 원천 차단(가능하면 verify에서 sw-only 지원하는 게 베스트)
     if mode == "sw":
-        # HW 시도를 원천 차단(권장): verify.run_gpt_demo가 sw-only를 지원하면 더 좋음.
-        # 여기서는 port=""로 빠르게 실패시키고 SW fallback을 사용하게 함.
         port = ""
 
     return verify.run_gpt_demo(
@@ -161,7 +151,7 @@ def attention_generate(
         )
 
     # -----------------------------
-    # 2) BERT: classification + match + heatmap page (그대로)
+    # 2) BERT: classification + match + heatmap page
     # -----------------------------
     pred_sw = None
     pred_sw_err = None
@@ -240,24 +230,13 @@ def attention_generate(
 
     T = int(attn.shape[0])
 
-    sw_line = "N/A"
-    if pred_sw is not None:
-        sw_line = (
-            f"{pred_sw['pred_label']} "
-            f"(Ppos={pred_sw['p_pos']:.3f}, Pneg={pred_sw['p_neg']:.3f})"
-        )
-
-    hw_line = "N/A"
-    if pred_hw is not None:
-        hw_line = (
-            f"{pred_hw['pred_label']} "
-            f"(Ppos={pred_hw['p_pos']:.3f}, Pneg={pred_hw['p_neg']:.3f})"
-        )
-
+    # (표시용) 예전 문자열은 필요 없으면 지워도 됨
+    # sw_line/hw_line은 더 이상 UI에 전달하지 않음(확률 float로 전달)
     match_line = "N/A"
     if (pred_sw is not None) and (pred_hw is not None):
         match_line = "O" if pred_sw["pred_id"] == pred_hw["pred_id"] else "X"
 
+    # 에러 블록 그대로 유지
     err_blocks = ""
     if auto_fallback_err:
         err_blocks += f"""
@@ -281,6 +260,22 @@ def attention_generate(
         </div>
         """
 
+    # ✅ UI용 확률(float) 준비
+    sw_ppos = 0.0
+    sw_pneg = 0.0
+    if pred_sw is not None:
+        sw_ppos = float(pred_sw.get("p_pos", 0.0))
+        sw_pneg = float(pred_sw.get("p_neg", 0.0))
+
+    hw_ppos = 0.0
+    hw_pneg = 0.0
+    if pred_hw is not None:
+        hw_ppos = float(pred_hw.get("p_pos", 0.0))
+        hw_pneg = float(pred_hw.get("p_neg", 0.0))
+    else:
+        # HW가 없으면 라벨 판단 기준을 SW로 대체(원치 않으면 이 1줄 삭제)
+        hw_ppos, hw_pneg = sw_ppos, sw_pneg
+
     return HTMLResponse(
         ui_bert_page.render_bert_result_page(
             used_mode=used_mode,
@@ -288,8 +283,10 @@ def attention_generate(
             head=int(head),
             T=int(T),
             attn_id=attn_id,
-            hw_line=hw_line,
-            sw_line=sw_line,
+            hw_ppos=hw_ppos,
+            hw_pneg=hw_pneg,
+            sw_ppos=sw_ppos,
+            sw_pneg=sw_pneg,
             match_line=match_line,
             err_blocks=err_blocks,
         )
@@ -313,7 +310,7 @@ def attn_heatmap_png(id: str):
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111)
 
-    # 12-step palette
+    # 12-step palette (기존 유지)
     base_colors = [
         "#F6EAE8",
         "#F2CEBE",
