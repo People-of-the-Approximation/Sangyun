@@ -29,12 +29,16 @@ def render_page1(
             <!-- 🔶 주황 박스 -->
             <div class="input-frame">
               <div class="input-left">
+
+                <!-- ✅ 상단 절반 비워서 "중간부터" 시작 -->
+                <div class="input-spacer"></div>
+
                 <div class="input-label">영어 문장을 입력해주세요</div>
 
                 <textarea
                   class="textarea"
                   name="text"
-                  rows="3"
+                  rows="1"
                   spellcheck="false"
                 ></textarea>
 
