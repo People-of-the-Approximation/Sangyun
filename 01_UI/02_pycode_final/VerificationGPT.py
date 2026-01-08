@@ -84,13 +84,11 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
         output_attentions=False,
         **kwargs,
     ):
-        # 1. Attention 저장 여부 판단
         want_attn = bool(output_attentions) or bool(
             kwargs.get("output_attentions", False)
         )
         want_attn = want_attn or getattr(self, "force_store_attn", False)
 
-        # 2. Q, K, V 추출 (PyTorch Tensor 유지)
         qkv = self.c_attn(hidden_states)
         query, key, value = qkv.split(self.split_size, dim=2)
 
@@ -112,11 +110,9 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
         B, H, Tq, Dh = query_layer.shape
         Tk = key_layer.shape[2]
 
-        # 3. Score 계산
         attn_weights = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attn_weights = attn_weights / (float(Dh) ** 0.5)
 
-        # 4. Causal Mask (Prompt에서는 필요, Generation(Tq=1)에서는 불필요)
         if Tq > 1:
             causal_mask = torch.triu(
                 torch.ones((Tq, Tk), dtype=torch.bool, device=attn_weights.device),
@@ -124,7 +120,6 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
             )
             attn_weights.masked_fill_(causal_mask[None, None, :, :], self.pad_value)
 
-        # 5. Attention Mask (Padding)
         if attention_mask is not None:
             if attention_mask.dim() == 2:
                 _mask = attention_mask[:, None, None, :]
@@ -139,13 +134,11 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
                 ),
             )
 
-        # 6. Softmax (SW, fast)
+        # SW Softmax (기본값)
         attn_probs = F.softmax(attn_weights, dim=-1)
 
         # ==========================================================
-        # 🚀 [HW Hybrid Logic] "선택된 1개 레이어"에서만 HW softmax 적용
-        #     - row_idx = Tq - 1 (현재 토큰 row)
-        #     - head는 전체 유지 (요청대로)
+        # 🚀 [HW Hybrid Logic] + 디버깅 코드 추가됨
         # ==========================================================
         if self.ser is not None:
             this_layer_idx = getattr(self, "layer_idx", None)
@@ -158,16 +151,16 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
 
             if apply_hw and Tq >= 1:
                 b_idx = 0
-                row_idx = Tq - 1  # ✅ 현재 토큰 row (prompt: 마지막 토큰, gen: 0)
+                row_idx = Tq - 1
 
-                # (H, Tk) 가져와서 한 번만 CPU로 이동
-                row_scores_tensor = attn_weights[b_idx, :, row_idx, :]  # (H, Tk)
+                row_scores_tensor = attn_weights[b_idx, :, row_idx, :]
                 row_scores_np = row_scores_tensor.detach().cpu().numpy()
 
                 hw_probs_np = np.zeros_like(row_scores_np)
 
                 for h in range(H):
                     try:
+                        # 1. HW 연산 시도
                         hw_out = softmax_fpga_variable(
                             self.ser,
                             row_scores_np[h],
@@ -175,8 +168,43 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
                             deadline_s=2.0,
                         )
                         hw_probs_np[h] = hw_out
-                    except Exception:
+
+                        # =================================================
+                        # 🔍 [DEBUG START] 터미널에 로그 찍기
+                        # =================================================
+                        # SW 정답값 계산 (비교용)
+                        sw_ref = F.softmax(
+                            torch.from_numpy(row_scores_np[h]), dim=-1
+                        ).numpy()
+
+                        # 차이 계산
+                        diff = np.abs(sw_ref - hw_out).mean()
+                        hw_sum = np.sum(hw_out)
+
+                        # 터미널에 출력 (Head 0번만 찍거나, 에러가 클 때만 찍어도 됨. 여기선 Head 0만 출력)
+                        if h == 0:
+                            print(
+                                f"\n[DEBUG] Layer {self.layer_idx} | Head {h} (Token len: {Tk})"
+                            )
+                            print(
+                                f"  > Input Score (Max): {np.max(row_scores_np[h]):.4f}"
+                            )
+                            print(f"  > SW Result (First 5): {sw_ref[:5]}")
+                            print(f"  > HW Result (First 5): {hw_out[:5]}")
+                            print(f"  > HW Sum: {hw_sum:.4f} (Should be 1.0)")
+                            print(f"  > Avg Diff: {diff:.6f}")
+
+                            if hw_sum < 0.9 or hw_sum > 1.1:
+                                print(
+                                    "  ⚠️ WARNING: HW Sum is weird! (UART Data Error?)"
+                                )
+                        # =================================================
+                        # 🔍 [DEBUG END]
+                        # =================================================
+
+                    except Exception as e:
                         # fallback: SW softmax 결과
+                        print(f"[HW Error] Layer {self.layer_idx} Head {h}: {e}")
                         fallback = (
                             attn_probs[b_idx, h, row_idx, :].detach().cpu().numpy()
                         )
@@ -189,11 +217,10 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
                 )
                 attn_probs[b_idx, :, row_idx, :] = hw_probs_tensor
 
-        # 7. Dropout & Weighted Sum
         attn_probs = self.attn_dropout(attn_probs)
-        attn_output = torch.matmul(attn_probs, value_layer)  # (B, H, Tq, Dh)
+        attn_output = torch.matmul(attn_probs, value_layer)
 
-        # 8. Heatmap 저장 (Target Layer/Head만)
+        # Heatmap 저장
         this_layer_idx = getattr(self, "layer_idx", None)
         store_this = (
             want_attn
@@ -207,7 +234,6 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
             saved_map = attn_probs[0, target_head, :, :].detach().cpu().numpy()
             self.last_attn = saved_map.astype(np.float64)
 
-        # 9. Output Format (B, Tq, H*Dh)
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
         new_shape = attn_output.size()[:-2] + (self.num_heads * self.head_dim,)
         attn_output = attn_output.view(*new_shape)
