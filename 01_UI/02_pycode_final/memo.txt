@@ -5,3 +5,8 @@ python -m pip install fastapi uvicorn python-multipart
 python -m pip install torch transformers datasets
 python -m pip install numpy matplotlib
 python -m pip install pyserial
+
+
+if gpt heatmap이 err로 나오는 경우 버전 교체하기
+pip install -U "transformers==4.53.1"
+
