@@ -137,10 +137,73 @@ def build_model_GPT2(ser: serial.Serial):
     return tokenizer, base_model, approx_model, device
 
 
+def run_interactive_verification():
+    ser = open_serial(SERIAL_PORT, baud=BAUD_RATE, timeout=1.0)
+    device = "cpu"
+    model_name = "gpt2"
+
+    print(f"Loading {model_name} model...")
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    baseline_model = GPT2LMHeadModel.from_pretrained(model_name).to(device).eval()
+    approx_model = GPT2LMHeadModel.from_pretrained(model_name).to(device).eval()
+    replace_gpt2_attention(approx_model, ser)
+
+    while True:
+        try:
+            user_input = input("USER >> ").strip()
+            if user_input.lower() in ["exit", "quit"]:
+                print("Exiting...")
+                break
+            if not user_input:
+                continue
+
+            input_ids = tokenizer.encode(user_input, return_tensors="pt").to(device)
+            attention_mask = torch.ones_like(input_ids).to(device)
+
+            start_t = time.time()
+            out_base = baseline_model.generate(
+                input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=5,
+                num_return_sequences=1,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+                use_cache=False,
+            )
+            base_time = time.time() - start_t
+            text_base = tokenizer.decode(out_base[0], skip_special_tokens=True)
+            print(f"[Baseline]: {text_base} ({base_time:.2f}s)")
+
+            start_t = time.time()
+            try:
+                out_approx = approx_model.generate(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=5,
+                    num_return_sequences=1,
+                    do_sample=False,
+                    pad_token_id=tokenizer.eos_token_id,
+                    use_cache=False,
+                )
+                approx_time = time.time() - start_t
+                text_approx = tokenizer.decode(out_approx[0], skip_special_tokens=True)
+                print(f"[Approx]  : {text_approx} ({approx_time:.2f}s)")
+            except Exception as e:
+                print(f"[Approx]  : Error -> {e}")
+                text_approx = "ERROR"
+
+        except KeyboardInterrupt:
+            print("\nInterrupted by user.")
+            break
+        except Exception as e:
+            print(f"\nAn error occurred: {e}")
+    close_serial(ser)
+    print("Serial port closed.")
+
+
 def get_last_gpt2_attention_matrix(model, layer=0, head=0):
-    """
-    특정 레이어와 헤드에 저장된 마지막 Attention Map을 꺼내오는 함수입니다.
-    """
     target_layer_idx = int(layer)
     target_head_idx = int(head)
     current_layer_idx = 0
@@ -151,7 +214,6 @@ def get_last_gpt2_attention_matrix(model, layer=0, head=0):
                 if module.last_attn is not None:
                     try:
                         # last_attn shape: (Batch, Heads, T, T)
-                        # 배치 0번의 특정 헤드 데이터를 가져옵니다.
                         return module.last_attn[0, target_head_idx, :, :].numpy()
                     except IndexError:
                         print(f"[Warning] Head index {target_head_idx} out of bounds.")
@@ -162,3 +224,7 @@ def get_last_gpt2_attention_matrix(model, layer=0, head=0):
 
     print(f"[Warning] Layer {layer} not found.")
     return None
+
+
+if __name__ == "__main__":
+    run_interactive_verification()
