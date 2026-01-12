@@ -93,7 +93,7 @@ class GPT2AttentionSoftmaxApprox(GPT2Attention):
                 )
 
         attn_probs = self.attn_dropout(attn_probs)
-
+        self.last_attn = attn_probs.detach().cpu()
         attn_output = torch.matmul(attn_probs, value)
 
         attn_output = self._my_merge_heads(attn_output, self.num_heads, self.head_dim)
